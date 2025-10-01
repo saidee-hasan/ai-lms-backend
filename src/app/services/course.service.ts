@@ -26,7 +26,6 @@ export class CourseService {
       throw new AppError('Course not found', 404);
     }
 
-    // Cache for 1 hour
     await redisClient.setEx(`course:${courseId}`, 3600, JSON.stringify(course));
 
     return course;
@@ -70,7 +69,6 @@ export class CourseService {
     Object.assign(course, updateData);
     await course.save();
 
-    // Clear cache
     await redisClient.del(`course:${courseId}`);
 
     return course;
@@ -90,6 +88,30 @@ export class CourseService {
     course.studentsEnrolled.push(studentId as any);
     await course.save();
 
+    await redisClient.del(`course:${courseId}`);
+
     return course;
+  }
+
+  static async getInstructorCourses(instructorId: string, page: number = 1, limit: number = 10) {
+    const skip = (page - 1) * limit;
+
+    const courses = await Course.find({ instructor: instructorId })
+      .populate('studentsEnrolled', 'name email')
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
+
+    const total = await Course.countDocuments({ instructor: instructorId });
+
+    return {
+      courses,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit)
+      }
+    };
   }
 }

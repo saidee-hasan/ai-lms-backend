@@ -4,40 +4,37 @@ import { generateToken, generateRefreshToken } from '../utils/jwt';
 import { AppError } from '../utils/AppError';
 import { asyncHandler } from '../utils/asyncHandler';
 import { redisClient } from '../config/redis';
-import { sendEmail } from '../utils/email';
+import { sendOTPEmail, sendEmail } from '../utils/email';
+import otpGenerator from 'otp-generator';
+import { AuthRequest } from '../middleware/auth';
 
 export const register = asyncHandler(async (req: Request, res: Response) => {
   const { name, email, password, role } = req.body;
 
-  // Check if user exists
   const existingUser = await User.findOne({ email });
   if (existingUser) {
     throw new AppError('User already exists', 400);
   }
 
-  // Create user
   const user = await User.create({ name, email, password, role });
 
-  // Generate tokens
   const accessToken = generateToken(user._id.toString());
   const refreshToken = generateRefreshToken(user._id.toString());
 
-  // Store refresh token in Redis
   await redisClient.setEx(`refresh_token:${user._id}`, 7 * 24 * 60 * 60, refreshToken);
 
-  // Set cookies
   res.cookie('accessToken', accessToken, {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
     sameSite: 'strict',
-    maxAge: 15 * 60 * 1000 // 15 minutes
+    maxAge: 15 * 60 * 1000
   });
 
   res.cookie('refreshToken', refreshToken, {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
     sameSite: 'strict',
-    maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
+    maxAge: 7 * 24 * 60 * 60 * 1000
   });
 
   res.status(201).json({
@@ -56,24 +53,19 @@ export const register = asyncHandler(async (req: Request, res: Response) => {
 export const login = asyncHandler(async (req: Request, res: Response) => {
   const { email, password } = req.body;
 
-  // Find user and include password
   const user = await User.findOne({ email }).select('+password');
   if (!user || !(await user.comparePassword(password))) {
     throw new AppError('Invalid credentials', 401);
   }
 
-  // Update last login
   user.lastLogin = new Date();
   await user.save();
 
-  // Generate tokens
   const accessToken = generateToken(user._id.toString());
   const refreshToken = generateRefreshToken(user._id.toString());
 
-  // Store refresh token in Redis
   await redisClient.setEx(`refresh_token:${user._id}`, 7 * 24 * 60 * 60, refreshToken);
 
-  // Set cookies
   res.cookie('accessToken', accessToken, {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
@@ -101,7 +93,7 @@ export const login = asyncHandler(async (req: Request, res: Response) => {
   });
 });
 
-export const logout = asyncHandler(async (req: Request, res: Response) => {
+export const logout = asyncHandler(async (req: AuthRequest, res: Response) => {
   const userId = req.user?.id;
   
   if (userId) {
@@ -117,7 +109,7 @@ export const logout = asyncHandler(async (req: Request, res: Response) => {
   });
 });
 
-export const getProfile = asyncHandler(async (req: Request, res: Response) => {
+export const getProfile = asyncHandler(async (req: AuthRequest, res: Response) => {
   const user = await User.findById(req.user?.id);
   if (!user) {
     throw new AppError('User not found', 404);
@@ -129,7 +121,7 @@ export const getProfile = asyncHandler(async (req: Request, res: Response) => {
   });
 });
 
-export const updateProfile = asyncHandler(async (req: Request, res: Response) => {
+export const updateProfile = asyncHandler(async (req: AuthRequest, res: Response) => {
   const { name, avatar } = req.body;
 
   const user = await User.findByIdAndUpdate(
@@ -141,5 +133,84 @@ export const updateProfile = asyncHandler(async (req: Request, res: Response) =>
   res.json({
     success: true,
     data: { user }
+  });
+});
+
+export const refreshToken = asyncHandler(async (req: Request, res: Response) => {
+  const refreshToken = req.cookies.refreshToken;
+  
+  if (!refreshToken) {
+    throw new AppError('Refresh token required', 401);
+  }
+
+  const decoded = verifyRefreshToken(refreshToken);
+  const storedToken = await redisClient.get(`refresh_token:${decoded.id}`);
+
+  if (!storedToken || storedToken !== refreshToken) {
+    throw new AppError('Invalid refresh token', 401);
+  }
+
+  const newAccessToken = generateToken(decoded.id);
+
+  res.cookie('accessToken', newAccessToken, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'strict',
+    maxAge: 15 * 60 * 1000
+  });
+
+  res.json({
+    success: true,
+    message: 'Token refreshed successfully'
+  });
+});
+
+export const sendVerificationOTP = asyncHandler(async (req: AuthRequest, res: Response) => {
+  const user = await User.findById(req.user?.id);
+  if (!user) {
+    throw new AppError('User not found', 404);
+  }
+
+  if (user.isVerified) {
+    throw new AppError('User already verified', 400);
+  }
+
+  const otp = otpGenerator.generate(6, {
+    digits: true,
+    lowerCaseAlphabets: false,
+    upperCaseAlphabets: false,
+    specialChars: false
+  });
+
+  await redisClient.setEx(`verification_otp:${user._id}`, 600, otp);
+  await sendOTPEmail(user.email, otp);
+
+  res.json({
+    success: true,
+    message: 'OTP sent successfully'
+  });
+});
+
+export const verifyOTP = asyncHandler(async (req: AuthRequest, res: Response) => {
+  const { otp } = req.body;
+  const user = await User.findById(req.user?.id);
+
+  if (!user) {
+    throw new AppError('User not found', 404);
+  }
+
+  const storedOTP = await redisClient.get(`verification_otp:${user._id}`);
+  
+  if (!storedOTP || storedOTP !== otp) {
+    throw new AppError('Invalid OTP', 400);
+  }
+
+  user.isVerified = true;
+  await user.save();
+  await redisClient.del(`verification_otp:${user._id}`);
+
+  res.json({
+    success: true,
+    message: 'Account verified successfully'
   });
 });
