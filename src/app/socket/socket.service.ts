@@ -25,18 +25,29 @@ class SocketService {
     this.io.on('connection', (socket: AuthenticatedSocket) => {
       console.log('User connected:', socket.user?.id);
 
-      // Join user to their personal room
       if (socket.user) {
         socket.join(`user:${socket.user.id}`);
+        
+        if (socket.user.role === 'instructor') {
+          socket.join('instructors');
+        }
       }
 
-      // Course related events
       socket.on('join-course', (courseId: string) => {
         socket.join(`course:${courseId}`);
+        console.log(`User ${socket.user?.id} joined course: ${courseId}`);
       });
 
       socket.on('leave-course', (courseId: string) => {
         socket.leave(`course:${courseId}`);
+        console.log(`User ${socket.user?.id} left course: ${courseId}`);
+      });
+
+      socket.on('course-progress', (data: { courseId: string; progress: number }) => {
+        socket.to(`course:${data.courseId}`).emit('user-progress-update', {
+          userId: socket.user?.id,
+          progress: data.progress
+        });
       });
 
       socket.on('disconnect', () => {
@@ -51,6 +62,10 @@ class SocketService {
 
   emitToCourse(courseId: string, event: string, data: any) {
     this.io.to(`course:${courseId}`).emit(event, data);
+  }
+
+  emitToInstructors(event: string, data: any) {
+    this.io.to('instructors').emit(event, data);
   }
 }
 

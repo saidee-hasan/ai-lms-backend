@@ -1,10 +1,10 @@
 import nodemailer from 'nodemailer';
 import { env } from '../config';
 
-const transporter = nodemailer.createTransporter({
+const transporter = nodemailer.createTransport({
   host: env.SMTP_HOST,
   port: parseInt(env.SMTP_PORT),
-  secure: false,
+  secure: false, // port 587 হলে false, port 465 হলে true
   auth: {
     user: env.SMTP_USER,
     pass: env.SMTP_PASS,
@@ -19,6 +19,7 @@ export const sendEmail = async (to: string, subject: string, html: string): Prom
       subject,
       html,
     });
+    console.log(`📧 Email sent to ${to}`);
   } catch (error) {
     console.error('Email sending failed:', error);
     throw new Error('Failed to send email');
